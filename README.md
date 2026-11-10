@@ -65,14 +65,17 @@ not notarized).
 - Sort the gallery by filename or by EXIF capture date; the date is shown in
   card captions and in the full-size viewer.
 - Keyboard navigation: arrows move the selection, Enter opens the photo,
-  Esc clears the person filter.
+  Esc clears every filter; Ctrl+O picks a folder and Enter in the folder
+  field starts the analysis.
 - Preview aspect (vertical 3:4 by default, or 4:3), face-box visibility and
   sort order are toggleable and remembered between launches; a settings
   dialog also covers gallery columns, folder watching, clustering thresholds
   and log verbosity.
 - Thumbnails are cached on disk, so a large library re-opens instantly.
 - The analyzed folder is watched for changes and re-indexed automatically
-  (new and removed files; can be turned off in settings).
+  (new and removed files; can be turned off in settings). Watching resumes
+  on the next launch, and photos whose files were deleted are dropped from
+  the library on the next analysis.
 - Progress bar while analysis is running.
 - Results (photos, faces, persons) are persisted in SQLite; unchanged photos
   are not re-analyzed on subsequent runs.
@@ -120,18 +123,27 @@ Windows, Linux and macOS runners and attaches them to a GitHub release.
 | Path                         | Purpose                                        |
 |------------------------------|------------------------------------------------|
 | `main.py`                    | Desktop entry point (QApplication + theme)     |
-| `gui/`                       | PySide6 UI: window, gallery, people, lightbox  |
+| `gui/window.py`              | Main window: top bar, filters, edits, watching |
+| `gui/gallery.py`             | Photo grid (model, card delegate, view)        |
+| `gui/lightbox.py`            | Full-size viewer: zoom, pan, navigation        |
+| `gui/sidebar.py`             | Shared sidebar row/list widgets                |
+| `gui/people.py`, `gui/tags.py` | People and tag sidebars                      |
+| `gui/data.py`                | Queries and edits used by the UI               |
+| `gui/thumbs.py`              | Async thumbnail/portrait loading and caching   |
+| `gui/theme.py`               | Palette, stylesheet, colors and painted icons  |
 | `analyzer.py`                | Folder scanning, face detection and clustering |
 | `database.py`                | SQLite schema and connection helpers           |
 | `paths.py`                   | Path resolution (source vs frozen bundle)      |
+| `timeutil.py`                | Timestamp helpers that handle pre-1970 dates   |
 | `scripts/download_models.py` | Downloads YuNet and SFace ONNX models          |
 | `tests/`                     | Pytest suite (offscreen, synthetic data)       |
 | `myphotos.spec`              | PyInstaller build spec                         |
 
 ## Storage
 
-- Running from source: `myphoto.db` next to the code.
-- Running a packaged executable: `~/.myphoto/myphoto.db`, with a rotating
+- Running from source: `myphoto.db` and `thumbs_cache/` next to the code.
+- Running a packaged executable: `~/.myphoto/myphoto.db` and
+  `~/.myphoto/thumbs_cache/`, with a rotating
   `~/.myphoto/myphotos.log` for debugging (windowed builds have no console).
 - View settings (preview aspect, face-box visibility) are stored with Qt
   `QSettings` under the `myPhotos` organization.

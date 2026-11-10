@@ -5,8 +5,10 @@ orientation the analyzer stored coordinates in) and hand QImages to the GUI
 thread through signals; pixmaps are created and cached there.
 """
 
+import glob
 import logging
 import os
+from collections import OrderedDict
 
 from PySide6.QtCore import QObject, QRect, QRunnable, QSize, Qt, QThreadPool, Signal
 from PySide6.QtGui import QImage, QImageReader, QPixmap
@@ -16,11 +18,36 @@ from paths import data_dir
 
 log = logging.getLogger(__name__)
 
+# A 450x600 thumbnail is ~1 MB as a pixmap; without a bound, scrolling
+# through a large library would keep every one of them in memory.
+MAX_CACHED_THUMBS = 400
 
-def _read_image(path):
+
+def read_image(path):
+    """Decode an image with its EXIF orientation applied (null QImage on failure)."""
     reader = QImageReader(path)
     reader.setAutoTransform(True)
-    return reader.read()  # null QImage on failure
+    return reader.read()
+
+
+class _LruCache(OrderedDict):
+    """Dict that evicts its least recently used entries beyond `limit`."""
+
+    def __init__(self, limit):
+        super().__init__()
+        self.limit = limit
+
+    def get(self, key, default=None):
+        if key not in self:
+            return default
+        self.move_to_end(key)
+        return self[key]
+
+    def put(self, key, value):
+        self[key] = value
+        self.move_to_end(key)
+        while len(self) > self.limit:
+            self.popitem(last=False)
 
 
 class _Job(QRunnable):
@@ -38,7 +65,7 @@ class _Job(QRunnable):
 class ImageLoader(QObject):
     """Async loader with in-memory caches keyed by photo/face ids."""
 
-    _thumb_done = Signal(int, str, QImage)
+    _thumb_done = Signal(str, int, str, QImage)
     _portrait_done = Signal(int, QImage)
     thumb_ready = Signal(int, str)  # photo_id, aspect_key
     portrait_ready = Signal(int)  # face_id
@@ -46,59 +73,76 @@ class ImageLoader(QObject):
     def __init__(self, parent=None):
         super().__init__(parent)
         self._pool = QThreadPool.globalInstance()
-        self._thumbs = {}  # (photo_id, aspect_key) -> QPixmap
-        self._portraits = {}  # face_id -> QPixmap
+        # Keyed by the disk-cache key, so a changed file or crop (face boxes
+        # edited) misses the cache instead of serving a stale image under
+        # the new face boxes.
+        self._thumbs = _LruCache(MAX_CACHED_THUMBS)  # cache key -> QPixmap
+        self._portraits = {}  # face_id -> QPixmap (small, bounded by #persons)
         self._pending = set()
         self._cache_dir = os.path.join(data_dir(), "thumbs_cache")
         os.makedirs(self._cache_dir, exist_ok=True)
         self._thumb_done.connect(self._on_thumb_done)
         self._portrait_done.connect(self._on_portrait_done)
 
-    def _cache_path(self, photo, aspect_key):
-        """Disk-cache location; the key invalidates on file change (mtime),
-        aspect switch and crop change (faces edited or deleted)."""
+    @staticmethod
+    def _cache_key(photo, aspect_key):
+        """Invalidates on file change (mtime), aspect switch and crop change."""
         crop = photo["crop"]
-        key = (
+        return (
             f"{photo['id']}-{int(photo.get('mtime') or 0)}-{aspect_key}"
             f"-{crop['x']}x{crop['y']}x{crop['w']}x{crop['h']}"
         )
-        return os.path.join(self._cache_dir, key + ".jpg")
+
+    def _cache_path(self, photo, aspect_key):
+        return os.path.join(self._cache_dir, self._cache_key(photo, aspect_key) + ".jpg")
 
     # ------------------------------------------------------------- thumbnails
 
     def thumbnail(self, photo, aspect_key):
         """Cached pixmap, or None (and schedule a load) if not ready yet."""
-        key = (photo["id"], aspect_key)
+        key = self._cache_key(photo, aspect_key)
         pixmap = self._thumbs.get(key)
         if pixmap is None and key not in self._pending:
             self._pending.add(key)
-            path, crop = photo["path"], dict(photo["crop"])
+            photo_id, path, crop = photo["id"], photo["path"], dict(photo["crop"])
             cache = self._cache_path(photo, aspect_key)
-            self._pool.start(_Job(lambda: self._load_thumb(key, path, crop, cache)))
+            self._pool.start(
+                _Job(lambda: self._load_thumb(key, photo_id, aspect_key, path, crop, cache))
+            )
         return pixmap
 
-    def _load_thumb(self, key, path, crop, cache):
+    def _load_thumb(self, key, photo_id, aspect_key, path, crop, cache):
         image = QImage(cache) if os.path.exists(cache) else QImage()
         if image.isNull():
-            image = _read_image(path)
+            image = read_image(path)
             if image.isNull():
                 log.warning("could not read thumbnail source %s", path)
             else:
                 image = image.copy(QRect(crop["x"], crop["y"], crop["w"], crop["h"]))
                 image = image.scaled(
-                    QSize(*THUMB_MAX[key[1]]),
+                    QSize(*THUMB_MAX[aspect_key]),
                     Qt.KeepAspectRatio,
                     Qt.SmoothTransformation,
                 )
-                if not image.save(cache, "JPG", 85):
+                if image.save(cache, "JPG", 85):
+                    self._remove_stale_cache_files(photo_id, aspect_key, cache)
+                else:
                     log.warning("could not write thumbnail cache %s", cache)
-        self._thumb_done.emit(key[0], key[1], image)
+        self._thumb_done.emit(key, photo_id, aspect_key, image)
 
-    def _on_thumb_done(self, photo_id, aspect_key, image):
-        key = (photo_id, aspect_key)
+    def _remove_stale_cache_files(self, photo_id, aspect_key, keep):
+        """Delete superseded cache files of this photo+aspect (old mtime/crop)."""
+        for old in glob.glob(os.path.join(self._cache_dir, f"{photo_id}-*-{aspect_key}-*.jpg")):
+            if old != keep:
+                try:
+                    os.remove(old)
+                except OSError:
+                    pass  # e.g. locked by another process; harmless
+
+    def _on_thumb_done(self, key, photo_id, aspect_key, image):
         self._pending.discard(key)
         if not image.isNull():
-            self._thumbs[key] = QPixmap.fromImage(image)
+            self._thumbs.put(key, QPixmap.fromImage(image))
             self.thumb_ready.emit(photo_id, aspect_key)
 
     # -------------------------------------------------------------- portraits
@@ -119,7 +163,7 @@ class ImageLoader(QObject):
         except Exception:  # noqa: BLE001 - a broken DB must not kill the worker
             log.exception("loading portrait source for face %s failed", face_id)
             row = None
-        image = _read_image(row["path"]) if row else QImage()
+        image = read_image(row["path"]) if row else QImage()
         if image.isNull() and row is not None:
             log.warning("could not read portrait source %s", row["path"])
         if not image.isNull():

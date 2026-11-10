@@ -2,6 +2,8 @@
 
 import os
 import sqlite3
+from collections.abc import Iterator
+from contextlib import closing, contextmanager
 
 from paths import data_dir
 
@@ -65,6 +67,7 @@ ADDED_COLUMNS = {
 
 
 def get_db() -> sqlite3.Connection:
+    """Open a new connection; the caller is responsible for closing it."""
     # timeout: how long a connection waits on a lock before raising, instead
     # of the 5s default — cheap insurance now that WAL lets readers (gallery,
     # polling) and the analyzer's writes overlap more.
@@ -81,8 +84,26 @@ def get_db() -> sqlite3.Connection:
     return conn
 
 
+@contextmanager
+def connect() -> Iterator[sqlite3.Connection]:
+    """Connection that commits on success, rolls back on error, always closes.
+
+    (sqlite3's own `with conn:` only commits/rolls back — it never closes.)
+    """
+    with closing(get_db()) as conn, conn:
+        yield conn
+
+
+def drop_orphan_persons(conn: sqlite3.Connection) -> None:
+    """Delete persons that no longer have any face."""
+    conn.execute(
+        "DELETE FROM persons WHERE id NOT IN"
+        " (SELECT DISTINCT person_id FROM faces WHERE person_id IS NOT NULL)"
+    )
+
+
 def init_db() -> None:
-    with get_db() as conn:
+    with connect() as conn:
         conn.executescript(SCHEMA)
         for table, added in ADDED_COLUMNS.items():
             columns = [row[1] for row in conn.execute(f"PRAGMA table_info({table})")]

@@ -5,13 +5,11 @@ import os
 import sqlite3
 from datetime import datetime
 
-import pytest
 from PySide6.QtCore import QEvent, Qt
 from PySide6.QtGui import QKeyEvent
 
 import analyzer
 import database
-import gui.window
 from tests.conftest import wait_idle
 
 

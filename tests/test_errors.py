@@ -1,6 +1,5 @@
 """Error-path tests: data failures surface as dialogs, bad files degrade."""
 
-from PySide6.QtCore import QPointF
 
 import gui.window
 

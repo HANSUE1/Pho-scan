@@ -6,7 +6,6 @@ from PIL.TiffImagePlugin import IFDRational
 from PySide6.QtWidgets import QInputDialog, QMessageBox
 
 import analyzer
-import gui.window
 from gui import data
 from tests.conftest import wait_idle
 

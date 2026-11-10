@@ -9,14 +9,14 @@ def is_frozen() -> bool:
 
 
 def resource_dir() -> str:
-    """Directory with bundled read-only resources (static/, models/)."""
+    """Directory with bundled read-only resources (models/)."""
     if is_frozen():
         return sys._MEIPASS  # noqa: SLF001 - PyInstaller runtime attribute
     return os.path.dirname(os.path.abspath(__file__))
 
 
 def data_dir() -> str:
-    """Writable directory for the SQLite database."""
+    """Writable directory for the SQLite database, log and thumbnail cache."""
     if is_frozen():
         path = os.path.join(os.path.expanduser("~"), ".myphoto")
         os.makedirs(path, exist_ok=True)

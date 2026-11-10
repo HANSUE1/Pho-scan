@@ -6,15 +6,15 @@ Esc or a click on the empty background closes the overlay.
 """
 
 import logging
-from datetime import datetime
 
 from PySide6.QtCore import QPointF, QRectF, Qt, Signal
 from PySide6.QtGui import QColor, QPainter, QPixmap
 from PySide6.QtWidgets import QDialog, QToolButton
 
 from gui.facepaint import draw_face_boxes
-from gui.thumbs import _read_image
 from gui.theme import MUTED, TEXT
+from gui.thumbs import read_image
+from timeutil import format_timestamp
 
 log = logging.getLogger(__name__)
 
@@ -61,7 +61,7 @@ class Lightbox(QDialog):
 
     def _load(self, index):
         self._index = index
-        image = _read_image(self._photos[index]["path"])
+        image = read_image(self._photos[index]["path"])
         if image.isNull():
             log.warning("could not read %s", self._photos[index]["path"])
         self._pixmap = None if image.isNull() else QPixmap.fromImage(image)
@@ -268,9 +268,9 @@ class Lightbox(QDialog):
         painter.setFont(font)
         caption = QRectF(16, self.height() - CAPTION_H, self.width() - 32, CAPTION_H)
         text = self._photo["path"]
-        taken = self._photo.get("taken_at")
+        taken = format_timestamp(self._photo.get("taken_at"), "%Y-%m-%d %H:%M")
         if taken:
-            text += f" · {datetime.fromtimestamp(taken):%Y-%m-%d %H:%M}"
+            text += f" · {taken}"
         if self._photo.get("lat") is not None:
             text += f" · 📍 {self._photo['lat']:.5f}, {self._photo['lon']:.5f}"
         tags = self._photo.get("tags") or []
@@ -278,6 +278,8 @@ class Lightbox(QDialog):
             text += " · " + " ".join(f"#{t['name']}" for t in tags)
         if len(self._photos) > 1:
             text = f"{self._index + 1} / {len(self._photos)}   {text}"
+        # Long paths would otherwise run off both edges of the window.
+        text = painter.fontMetrics().elidedText(text, Qt.ElideMiddle, int(caption.width()))
         painter.drawText(caption, Qt.AlignCenter, text)
 
         if self._has_prev():

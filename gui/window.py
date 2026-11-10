@@ -5,7 +5,7 @@ import logging
 import os
 
 from PySide6.QtCore import QFileSystemWatcher, QSettings, Qt, QTimer, QUrl
-from PySide6.QtGui import QDesktopServices
+from PySide6.QtGui import QDesktopServices, QKeySequence, QShortcut
 from PySide6.QtWidgets import (
     QApplication,
     QComboBox,
@@ -34,7 +34,7 @@ from gui import data
 from gui.gallery import GalleryView
 from gui.lightbox import Lightbox
 from gui.people import PeoplePanel
-from gui.settings import SettingsDialog
+from gui.settings import LOG_LEVELS, SettingsDialog
 from gui.tags import TagsPanel
 from gui.theme import (
     app_icon,
@@ -53,6 +53,11 @@ POLL_INTERVAL_MS = 400
 SIDEBAR_W = 280
 RESCAN_DEBOUNCE_MS = 2000
 MAX_WATCH_DIRS = 512
+# How long closing the window waits for a running analysis to stop cleanly.
+CLOSE_WAIT_S = 3.0
+
+EMPTY_LIBRARY_TEXT = "No analyzed photos yet. Pick a folder and press Analyze."
+EMPTY_FILTER_TEXT = "No photos match the current filter.\nPress Esc or “show all” to clear it."
 
 
 class MergeDialog(QDialog):
@@ -96,6 +101,7 @@ class MainWindow(QMainWindow):
         self.active_tag_ids: set[int] = set()
         self.location_only = False
         self.watched_folder: str | None = None
+        self._analyzing_folder: str | None = None
         self.poll_timer = QTimer(self)
         self.poll_timer.setInterval(POLL_INTERVAL_MS)
         self.poll_timer.timeout.connect(self._poll_progress)
@@ -112,12 +118,17 @@ class MainWindow(QMainWindow):
         analyzer_mod.CLUSTER_THRESHOLD = float(
             self.settings.value("clusterThreshold", analyzer_mod.CLUSTER_THRESHOLD)
         )
-        logging.getLogger().setLevel(str(self.settings.value("logLevel", "INFO")))
+        log_level = str(self.settings.value("logLevel", "INFO")).upper()
+        logging.getLogger().setLevel(log_level if log_level in LOG_LEVELS else "INFO")
 
         self._build_ui()
         self.gallery.set_columns(int(self.settings.value("columns", 4)))
         self._apply_view_settings()
         self.refresh_all()
+        # Resume watching the folder analyzed in a previous session.
+        last = self.settings.value("lastFolder")
+        if last:
+            self._setup_watch(str(last))
         self.gallery.setFocus()
 
     # ------------------------------------------------------------------- UI
@@ -146,15 +157,19 @@ class MainWindow(QMainWindow):
         # Let a dropped folder reach MainWindow.dropEvent instead of Qt
         # inserting the URL's raw text into the field.
         self.folder_input.setAcceptDrops(False)
+        self.folder_input.returnPressed.connect(self._start_analysis)
         top.addWidget(self.folder_input, 1)
         browse = QToolButton()
         browse.setObjectName("browseBtn")
         browse.setText("Browse…")
+        browse.setToolTip("Choose a folder (Ctrl+O)")
         browse.clicked.connect(self._browse_folder)
+        QShortcut(QKeySequence.Open, self, activated=self._browse_folder)
         top.addWidget(browse)
         self.analyze_btn = QPushButton("Analyze")
         self.analyze_btn.setObjectName("analyzeBtn")
         self.analyze_btn.setCursor(Qt.PointingHandCursor)
+        self.analyze_btn.setToolTip("Scan the folder for photos and faces (Enter)")
         self.analyze_btn.clicked.connect(self._start_analysis)
         top.addWidget(self.analyze_btn)
         root.addWidget(topbar)
@@ -207,12 +222,13 @@ class MainWindow(QMainWindow):
         self.gallery = GalleryView(self.loader)
         self.gallery.photo_clicked.connect(self._open_lightbox)
         self.gallery.customContextMenuRequested.connect(self._photo_context_menu)
-        empty = QLabel("No analyzed photos yet. Pick a folder and press Analyze.")
-        empty.setObjectName("emptyState")
-        empty.setAlignment(Qt.AlignCenter)
+        self.empty_label = QLabel(EMPTY_LIBRARY_TEXT)
+        self.empty_label.setObjectName("emptyState")
+        self.empty_label.setAlignment(Qt.AlignCenter)
+        self.empty_label.setWordWrap(True)
         self.stack = QStackedWidget()
         self.stack.addWidget(self.gallery)
-        self.stack.addWidget(empty)
+        self.stack.addWidget(self.empty_label)
         pane.addWidget(self.stack, 1)
         body.addLayout(pane, 1)
 
@@ -335,7 +351,9 @@ class MainWindow(QMainWindow):
             self._report_error("Loading photos", exc)
             return
         self.gallery.set_photos(photos)
+        self.empty_label.setText(EMPTY_FILTER_TEXT if self._has_filter() else EMPTY_LIBRARY_TEXT)
         self.stack.setCurrentIndex(0 if photos else 1)
+        self._update_filter_banner()
 
     def refresh_all(self):
         self.refresh_persons()
@@ -356,7 +374,10 @@ class MainWindow(QMainWindow):
             parts.append("with location")
         self.filter_banner.setVisible(bool(parts))
         if parts:
-            self.filter_label.setText("Showing photos " + " · ".join(parts))
+            n = len(self.gallery.photos())
+            self.filter_label.setText(
+                f"Showing {n} photo{'' if n == 1 else 's'} " + " · ".join(parts)
+            )
 
     # ---------------------------------------------------------------- filter
 
@@ -442,6 +463,9 @@ class MainWindow(QMainWindow):
             return
         try:
             data.rename_tag(tag["id"], name)
+        except data.DuplicateNameError as exc:
+            QMessageBox.warning(self, "Rename tag", str(exc))
+            return
         except Exception as exc:  # noqa: BLE001
             self._report_error("Rename tag", exc)
             return
@@ -504,7 +528,7 @@ class MainWindow(QMainWindow):
     def _after_face_edit(self):
         self.refresh_all()
         if self.lightbox.isVisible():
-            self.lightbox.refresh(self.gallery._model.photos())
+            self.lightbox.refresh(self.gallery.photos())
 
     def _assign_face(self, face, person):
         try:
@@ -761,11 +785,16 @@ class MainWindow(QMainWindow):
         log.info("watching %d folder(s) under %s", len(dirs), folder)
 
     def _on_dir_changed(self, _path):
-        if self.watch_enabled and not self.analyzer.is_running():
+        # Also armed while an analysis runs: files added mid-run would
+        # otherwise be missed until the next unrelated change.
+        if self.watch_enabled:
             self.rescan_timer.start()
 
     def _auto_rescan(self):
-        if not self.watched_folder or self.analyzer.is_running():
+        if not self.watched_folder:
+            return
+        if self.analyzer.is_running():
+            self.rescan_timer.start()  # try again once the current run is over
             return
         if self.analyzer.start(self.watched_folder):
             log.info("folder changed — re-indexing %s", self.watched_folder)
@@ -781,13 +810,20 @@ class MainWindow(QMainWindow):
             self.folder_input.setText(folder)
 
     def _start_analysis(self):
-        folder = os.path.abspath(os.path.expanduser(self.folder_input.text().strip()))
-        if not self.folder_input.text().strip():
-            QMessageBox.warning(self, "Analyze", "Folder is required")
+        if self.analyzer.is_running():
+            return  # e.g. Enter pressed in the folder field during a run
+        text = self.folder_input.text().strip()
+        if not text:
+            QMessageBox.warning(self, "Analyze", "Please choose a folder first.")
             return
+        # realpath gives one canonical spelling (and on Windows the on-disk
+        # letter case), so the same folder typed differently doesn't create
+        # duplicate photo rows.
+        folder = os.path.realpath(os.path.expanduser(text))
         if not os.path.isdir(folder):
             QMessageBox.warning(self, "Analyze", f"Folder not found: {folder}")
             return
+        self.folder_input.setText(folder)
         if not self.analyzer.start(folder):
             QMessageBox.warning(self, "Analyze", "Analysis is already running")
             return
@@ -813,7 +849,8 @@ class MainWindow(QMainWindow):
         self.progress_bar.setValue(done)
         if progress["status"] == "running":
             current = f" — {progress['current']}" if progress["current"] else ""
-            self.progress_label.setText(f"{done} / {total}{current}")
+            percent = f" ({done * 100 // total}%)" if total else ""
+            self.progress_label.setText(f"{done} / {total}{percent}{current}")
             # Refresh people as they appear during the run.
             self.refresh_persons()
         else:
@@ -831,13 +868,32 @@ class MainWindow(QMainWindow):
                     " already processed.",
                 )
             elif progress["status"] == "done":
-                self._setup_watch(getattr(self, "_analyzing_folder", None)
-                                  or self.watched_folder)
+                self._setup_watch(self._analyzing_folder or self.watched_folder)
             self.refresh_all()
 
     # -------------------------------------------------------------- lightbox
 
     def _open_lightbox(self, photo):
-        photos = self.gallery._model.photos()
+        photos = self.gallery.photos()
         index = next((i for i, p in enumerate(photos) if p["id"] == photo["id"]), 0)
         self.lightbox.show_photos(photos, index, show_boxes=self.show_boxes)
+
+    # ------------------------------------------------------------- lifecycle
+
+    def closeEvent(self, event):
+        """Stop background activity so a closed window can't act later.
+
+        Without this, the poll/rescan timers and the folder watcher of a
+        closed window stay alive: a later folder change would start an
+        analysis and pop dialogs from a window nobody can see, and quitting
+        mid-run would kill the worker thread in the middle of a write.
+        """
+        self.poll_timer.stop()
+        self.rescan_timer.stop()
+        if self.watcher.directories():
+            self.watcher.removePaths(self.watcher.directories())
+        self.watched_folder = None
+        if self.analyzer.is_running():
+            self.analyzer.cancel()
+            self.analyzer.wait(CLOSE_WAIT_S)
+        super().closeEvent(event)

@@ -4,8 +4,6 @@ The grid always shows COLUMNS columns: cell size is recomputed from the
 viewport width on every resize, so cards scale with the window.
 """
 
-from datetime import datetime
-
 from PySide6.QtCore import QAbstractListModel, QModelIndex, QRect, QRectF, QSize, Qt, Signal
 from PySide6.QtGui import QColor, QPainter, QPainterPath, QPen
 from PySide6.QtWidgets import QAbstractItemView, QListView, QStyle, QStyledItemDelegate
@@ -13,6 +11,7 @@ from PySide6.QtWidgets import QAbstractItemView, QListView, QStyle, QStyledItemD
 from gui.data import THUMB_ASPECTS
 from gui.facepaint import draw_face_boxes
 from gui.theme import ACCENT, BORDER, MUTED, PANEL, tag_color
+from timeutil import format_timestamp
 
 DEFAULT_COLUMNS = 4
 GAP = 12  # gutter between cards (GAP/2 inset on every cell side)
@@ -106,9 +105,9 @@ class PhotoDelegate(QStyledItemDelegate):
         font.setPixelSize(12)
         painter.setFont(font)
         caption = photo["filename"]
-        taken = photo.get("taken_at") or photo.get("mtime")
-        if taken:
-            caption += f" · {datetime.fromtimestamp(taken):%Y-%m-%d}"
+        date = format_timestamp(photo.get("taken_at") or photo.get("mtime"), "%Y-%m-%d")
+        if date:
+            caption += f" · {date}"
         elided = painter.fontMetrics().elidedText(
             caption, Qt.ElideMiddle, name_rect.width()
         )
@@ -187,6 +186,10 @@ class GalleryView(QListView):
 
     def set_photos(self, photos):
         self._model.set_photos(photos)
+
+    def photos(self):
+        """The photo dicts currently shown, in display order."""
+        return self._model.photos()
 
     def set_aspect(self, aspect_key):
         self.delegate.aspect_key = aspect_key

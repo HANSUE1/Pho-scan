@@ -9,9 +9,11 @@ from datetime import datetime
 
 import cv2
 import numpy as np
+from PIL import Image, ImageOps
 
-from database import get_db
+from database import drop_orphan_persons, get_db
 from paths import resource_dir
+from timeutil import to_timestamp
 
 log = logging.getLogger(__name__)
 
@@ -45,20 +47,24 @@ TAG_DATETIME = 306
 GPS_LAT_REF, GPS_LAT, GPS_LON_REF, GPS_LON = 1, 2, 3, 4
 
 
-def read_taken_at(path: str) -> float | None:
-    """Capture timestamp from EXIF metadata, or None when unavailable."""
+def _read_exif(path: str):
+    """The file's EXIF block, or None if the file can't be opened."""
     try:
-        from PIL import Image
-
         with Image.open(path) as img:
-            exif = img.getexif()
-            value = exif.get_ifd(EXIF_SUB_IFD).get(TAG_DATETIME_ORIGINAL) or exif.get(
-                TAG_DATETIME
-            )
+            return img.getexif()
+    except Exception:  # noqa: BLE001 - EXIF is best-effort
+        return None
+
+
+def _taken_at_from_exif(exif) -> float | None:
+    try:
+        value = exif.get_ifd(EXIF_SUB_IFD).get(TAG_DATETIME_ORIGINAL) or exif.get(
+            TAG_DATETIME
+        )
         if not value:
             return None
-        return datetime.strptime(str(value).strip(), "%Y:%m:%d %H:%M:%S").timestamp()
-    except Exception:  # noqa: BLE001 - EXIF is best-effort
+        return to_timestamp(datetime.strptime(str(value).strip(), "%Y:%m:%d %H:%M:%S"))
+    except Exception:  # noqa: BLE001 - malformed EXIF dates are common
         return None
 
 
@@ -71,13 +77,9 @@ def _dms_to_degrees(dms, ref) -> float | None:
     return -value if str(ref).strip().upper() in ("S", "W") else value
 
 
-def read_gps(path: str) -> tuple[float, float] | None:
-    """(latitude, longitude) from EXIF GPS metadata, or None when absent."""
+def _gps_from_exif(exif) -> tuple[float, float] | None:
     try:
-        from PIL import Image
-
-        with Image.open(path) as img:
-            gps = img.getexif().get_ifd(GPS_IFD)
+        gps = exif.get_ifd(GPS_IFD)
         if not gps:
             return None
         lat = _dms_to_degrees(gps.get(GPS_LAT), gps.get(GPS_LAT_REF))
@@ -85,8 +87,20 @@ def read_gps(path: str) -> tuple[float, float] | None:
         if lat is None or lon is None or not (-90 <= lat <= 90 and -180 <= lon <= 180):
             return None
         return lat, lon
-    except Exception:  # noqa: BLE001 - EXIF is best-effort
+    except Exception:  # noqa: BLE001 - malformed GPS blocks are common
         return None
+
+
+def read_taken_at(path: str) -> float | None:
+    """Capture timestamp from EXIF metadata, or None when unavailable."""
+    exif = _read_exif(path)
+    return _taken_at_from_exif(exif) if exif is not None else None
+
+
+def read_gps(path: str) -> tuple[float, float] | None:
+    """(latitude, longitude) from EXIF GPS metadata, or None when absent."""
+    exif = _read_exif(path)
+    return _gps_from_exif(exif) if exif is not None else None
 
 
 def upsert_photo(
@@ -106,8 +120,9 @@ def upsert_photo(
     `_process_photo` does, to check `mtime`) skip a second identical SELECT.
     Left as None, the row is looked up here exactly as before.
     """
-    taken_at = read_taken_at(path)
-    gps = read_gps(path)
+    exif = _read_exif(path)  # opened once for both date and location
+    taken_at = _taken_at_from_exif(exif) if exif is not None else None
+    gps = _gps_from_exif(exif) if exif is not None else None
     lat, lon = gps if gps else (None, None)
     if existing_id is None:
         existing = db.execute("SELECT id FROM photos WHERE path = ?", (path,)).fetchone()
@@ -130,15 +145,67 @@ def upsert_photo(
     return cur.lastrowid
 
 
-def scan_image_files(folder: str) -> list[str]:
-    """Return sorted list of image file paths under folder, recursively."""
-    files = []
-    for root, _dirs, names in os.walk(folder):
+def _scan(folder: str) -> tuple[list[str], list[str]]:
+    """(sorted image paths under folder, directories that could not be read)."""
+    files, unreadable = [], []
+
+    def on_error(err: OSError) -> None:
+        unreadable.append(err.filename)
+
+    for root, _dirs, names in os.walk(folder, onerror=on_error):
         for name in names:
             if os.path.splitext(name)[1].lower() in IMAGE_EXTENSIONS:
                 files.append(os.path.join(root, name))
     files.sort()
-    return files
+    return files, unreadable
+
+
+def scan_image_files(folder: str) -> list[str]:
+    """Return sorted list of image file paths under folder, recursively."""
+    return _scan(folder)[0]
+
+
+def _is_under(path: str, folder: str) -> bool:
+    return path.startswith(os.path.join(folder, ""))
+
+
+def prune_missing_photos(
+    db: sqlite3.Connection,
+    folder: str,
+    present: Set[str],
+    unreadable_dirs: list[str] = (),
+) -> int:
+    """Delete rows for photos under `folder` whose file is gone.
+
+    Only rows inside the scanned folder are considered (other analyzed
+    folders are left alone), and nothing under a directory that couldn't be
+    listed is touched — a permission hiccup must not wipe tags and faces.
+    Faces and tag links go with the photo (ON DELETE CASCADE); persons left
+    without faces are dropped. Returns the number of photos removed.
+    """
+    gone = [
+        (row["id"],)
+        for row in db.execute("SELECT id, path FROM photos").fetchall()
+        if _is_under(row["path"], folder)
+        and row["path"] not in present
+        and not any(row["path"] == d or _is_under(row["path"], d) for d in unreadable_dirs)
+    ]
+    if gone:
+        db.executemany("DELETE FROM photos WHERE id = ?", gone)
+        drop_orphan_persons(db)
+        db.commit()
+    return len(gone)
+
+
+def clip_box(x: int, y: int, w: int, h: int, width: int, height: int) -> tuple[int, ...]:
+    """Intersect a detection box with the image bounds on all four sides.
+
+    Clamping only x/y and keeping w/h would *shift* a box that pokes out past
+    the left/top edge instead of trimming it.
+    """
+    x2, y2 = min(x + w, width), min(y + h, height)
+    x, y = max(x, 0), max(y, 0)
+    return int(x), int(y), int(x2 - x), int(y2 - y)
 
 
 def _normalize(vec: np.ndarray) -> np.ndarray:
@@ -218,6 +285,12 @@ class Analyzer:
         self._thread.start()
         return True
 
+    def wait(self, timeout: float | None = None) -> bool:
+        """Block until the worker thread exits; True if it did within timeout."""
+        if self._thread is not None:
+            self._thread.join(timeout)
+        return not self.is_running()
+
     def cancel(self) -> None:
         """Ask a running analysis to stop after the photo it's currently on.
 
@@ -230,16 +303,31 @@ class Analyzer:
     # ---------------------------------------------------------------- core
 
     def _run(self, folder: str) -> None:
+        db = None
         try:
+            # Checked here, not only in the GUI: an auto-rescan can fire after
+            # the folder (or the drive it lives on) went away, and an empty
+            # scan must never be mistaken for "every photo was deleted".
+            if not os.path.isdir(folder):
+                raise FileNotFoundError(f"Folder not found: {folder}")
+            for model in (DETECTOR_MODEL, RECOGNIZER_MODEL):
+                if not os.path.isfile(model):
+                    raise FileNotFoundError(
+                        f"Model file missing: {model}\n"
+                        "Run `python scripts/download_models.py` first."
+                    )
             detector = cv2.FaceDetectorYN.create(
                 DETECTOR_MODEL, "", (320, 320), DETECTION_SCORE_THRESHOLD
             )
             recognizer = cv2.FaceRecognizerSF.create(RECOGNIZER_MODEL, "")
 
-            files = scan_image_files(folder)
+            files, unreadable = _scan(folder)
             self._set(total=len(files))
 
             db = get_db()
+            removed = prune_missing_photos(db, folder, set(files), unreadable)
+            if removed:
+                log.info("removed %d photo(s) no longer on disk", removed)
             persons = self._load_persons(db)
             # Faces that existed before this run carry assignments from the
             # previous run and any manual edits (rename/merge); they outrank
@@ -256,13 +344,19 @@ class Analyzer:
                 try:
                     self._process_photo(db, detector, recognizer, persons, path)
                 except Exception as exc:  # noqa: BLE001 - skip unreadable files
+                    # Drop the half-written photo (its old faces were already
+                    # deleted) instead of letting the next commit persist it,
+                    # and forget persons that only existed in that rollback.
+                    db.rollback()
+                    alive = {r[0] for r in db.execute("SELECT id FROM persons")}
+                    for pid in [p for p in persons if p not in alive]:
+                        del persons[pid]
                     log.warning("skipping %s: %s", path, exc)
                 processed = i + 1
 
             if not canceled:
                 self._set(current="Clustering faces…")
                 self._recluster(db, confirmed_ids)
-            db.close()
             self._set(
                 status="canceled" if canceled else "done",
                 done=processed if canceled else len(files),
@@ -271,6 +365,9 @@ class Analyzer:
         except Exception as exc:  # noqa: BLE001
             log.exception("analysis of %s failed", folder)
             self._set(status="error", error=str(exc))
+        finally:
+            if db is not None:
+                db.close()
 
     def _load_persons(self, db: sqlite3.Connection) -> dict[int, list[np.ndarray]]:
         """Load stored embeddings grouped by person for incremental clustering."""
@@ -323,15 +420,12 @@ class Analyzer:
 
         if detections is not None:
             for det in detections:
+                x, y, w, h = clip_box(*(det[:4] / scale).round().astype(int), width, height)
+                if w < MIN_FACE_SIZE or h < MIN_FACE_SIZE:
+                    continue  # skipped before the (expensive) embedding step
+
                 feature = recognizer.feature(recognizer.alignCrop(detect_img, det))
                 embedding = _normalize(feature.flatten().astype(np.float32))
-
-                x, y, w, h = (det[:4] / scale).round().astype(int)
-                x, y = max(x, 0), max(y, 0)
-                w, h = min(w, width - x), min(h, height - y)
-                if w < MIN_FACE_SIZE or h < MIN_FACE_SIZE:
-                    continue
-
                 person_id = self._assign_person(db, persons, embedding)
                 db.execute(
                     "INSERT INTO faces (photo_id, person_id, x, y, w, h, score, embedding)"
@@ -421,12 +515,12 @@ class Analyzer:
 
         cluster_person = {}
         used_persons = set()
-        for count, ci, pid in sorted(confirmed_overlaps, reverse=True):
+        for _count, ci, pid in sorted(confirmed_overlaps, reverse=True):
             if ci in cluster_person:
                 continue
             cluster_person[ci] = pid
             used_persons.add(pid)
-        for count, ci, pid in sorted(fresh_overlaps, reverse=True):
+        for _count, ci, pid in sorted(fresh_overlaps, reverse=True):
             if ci in cluster_person or pid in used_persons:
                 continue
             cluster_person[ci] = pid
@@ -441,19 +535,20 @@ class Analyzer:
                 [(pid, face_ids[m]) for m in members if face_ids[m] not in pinned_ids],
             )
 
-        db.execute(
-            "DELETE FROM persons WHERE id NOT IN (SELECT DISTINCT person_id FROM faces"
-            " WHERE person_id IS NOT NULL)"
-        )
+        drop_orphan_persons(db)
         db.commit()
 
     @staticmethod
     def _read_with_pillow(path: str) -> np.ndarray | None:
-        """Fallback reader for formats cv2.imread cannot open."""
-        try:
-            from PIL import Image
+        """Fallback reader for formats cv2.imread cannot open.
 
+        EXIF orientation is applied, like cv2.imread and the GUI's
+        QImageReader(autoTransform) do, so stored face coordinates line up
+        with the image as it is displayed.
+        """
+        try:
             with Image.open(path) as img:
-                return cv2.cvtColor(np.array(img.convert("RGB")), cv2.COLOR_RGB2BGR)
+                upright = ImageOps.exif_transpose(img).convert("RGB")
+            return cv2.cvtColor(np.array(upright), cv2.COLOR_RGB2BGR)
         except Exception:  # noqa: BLE001
             return None
