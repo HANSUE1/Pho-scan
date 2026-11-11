@@ -65,9 +65,12 @@ ADDED_COLUMNS = {
     "faces": [("pinned", "INTEGER NOT NULL DEFAULT 0")],
 }
 
+_PRAGMAS_APPLIED = False
+
 
 def get_db() -> sqlite3.Connection:
     """Open a new connection; the caller is responsible for closing it."""
+    global _PRAGMAS_APPLIED
     # timeout: how long a connection waits on a lock before raising, instead
     # of the 5s default — cheap insurance now that WAL lets readers (gallery,
     # polling) and the analyzer's writes overlap more.
@@ -79,8 +82,12 @@ def get_db() -> sqlite3.Connection:
     # only the WAL is appended to. This is what makes analyzing large photo
     # libraries (one commit per photo) fast; still crash-safe, per SQLite's
     # own guidance for this exact access pattern.
-    conn.execute("PRAGMA journal_mode = WAL")
-    conn.execute("PRAGMA synchronous = NORMAL")
+    # Journal mode and synchronous are persistent database settings, so they
+    # only need to be applied once per process.
+    if not _PRAGMAS_APPLIED:
+        conn.execute("PRAGMA journal_mode = WAL")
+        conn.execute("PRAGMA synchronous = NORMAL")
+        _PRAGMAS_APPLIED = True
     return conn
 
 

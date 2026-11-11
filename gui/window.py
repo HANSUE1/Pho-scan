@@ -37,8 +37,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-import analyzer as analyzer_mod
-from analyzer import Analyzer
+from analyzer import Analyzer, CLUSTER_THRESHOLD, GREEDY_THRESHOLD
 from gui import data
 from gui.gallery import GalleryView
 from gui.lightbox import Lightbox
@@ -132,11 +131,11 @@ class MainWindow(QMainWindow):
         self._progress_anim: QPropertyAnimation | None = None
         self._banner_anim: QPropertyAnimation | None = None
 
-        analyzer_mod.GREEDY_THRESHOLD = float(
-            self.settings.value("greedyThreshold", analyzer_mod.GREEDY_THRESHOLD)
+        GREEDY_THRESHOLD = float(
+            self.settings.value("greedyThreshold", GREEDY_THRESHOLD)
         )
-        analyzer_mod.CLUSTER_THRESHOLD = float(
-            self.settings.value("clusterThreshold", analyzer_mod.CLUSTER_THRESHOLD)
+        CLUSTER_THRESHOLD = float(
+            self.settings.value("clusterThreshold", CLUSTER_THRESHOLD)
         )
         log_level = str(self.settings.value("logLevel", "INFO")).upper()
         logging.getLogger().setLevel(log_level if log_level in LOG_LEVELS else "INFO")
@@ -770,8 +769,8 @@ class MainWindow(QMainWindow):
                 "aspect": self.aspect_key,
                 "sort": self.sort_order,
                 "watch": self.watch_enabled,
-                "greedy_threshold": analyzer_mod.GREEDY_THRESHOLD,
-                "cluster_threshold": analyzer_mod.CLUSTER_THRESHOLD,
+                "greedy_threshold": GREEDY_THRESHOLD,
+                "cluster_threshold": CLUSTER_THRESHOLD,
                 "log_level": logging.getLevelName(logging.getLogger().level),
             },
             self,

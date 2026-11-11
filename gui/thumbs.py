@@ -51,15 +51,18 @@ class _LruCache(OrderedDict):
 
 
 class _Job(QRunnable):
-    def __init__(self, fn):
+    def __init__(self, fn, on_error=None):
         super().__init__()
         self._fn = fn
+        self._on_error = on_error
 
     def run(self):
         try:
             self._fn()
         except Exception:  # noqa: BLE001 - keep the thread pool alive
             log.exception("image loader job failed")
+            if self._on_error is not None:
+                self._on_error()
 
 
 class ImageLoader(QObject):

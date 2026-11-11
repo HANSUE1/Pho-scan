@@ -3,6 +3,7 @@
 import logging
 import os
 import sqlite3
+import struct
 import threading
 from collections.abc import Set
 from datetime import datetime
@@ -36,6 +37,44 @@ MAX_DETECTION_SIDE = 1280
 MIN_FACE_SIZE = 24
 # At most this many embeddings per person are kept in memory for matching.
 MAX_EMBEDDINGS_PER_PERSON = 32
+
+# ONNX/protobuf files start with a varint-encoded field tag. A quick sanity
+# check: the first byte should be a plausible field tag (0x08 = field 1 wire
+# type 0, which is how ONNX graphs begin) and the file should contain protobuf
+# keywords like "graph", "node", or "op".
+_MODEL_SANITY_BYTES = (b"graph", b"node", b"op", b"input", b"output")
+
+
+class ModelError(Exception):
+    """Raised when a model file is missing, corrupt, or unsupported."""
+
+
+def validate_model(path: str) -> None:
+    """Check that `path` looks like a valid ONNX/protobuf model file.
+
+    Raises ModelError with a user-friendly message if the file is missing,
+    empty, or clearly not a model.
+    """
+    if not os.path.isfile(path):
+        raise ModelError(
+            f"Model file missing: {path}\n"
+            "Run `python scripts/download_models.py` to download it."
+        )
+    if os.path.getsize(path) < 1024:
+        raise ModelError(
+            f"Model file too small ({os.path.getsize(path)} bytes): {path}\n"
+            "The download may have been interrupted. Delete the file and run "
+            "`python scripts/download_models.py` again."
+        )
+    with open(path, "rb") as f:
+        header = f.read(64)
+    # Protobuf varint for field 1 (the ONNX "graph" or "ir_version" field)
+    # typically starts with 0x08. Also look for protobuf keywords.
+    if not any(k in header for k in _MODEL_SANITY_BYTES):
+        raise ModelError(
+            f"Model file does not look like a valid ONNX model: {path}\n"
+            "Delete it and run `python scripts/download_models.py` again."
+        )
 
 
 # EXIF tags: DateTimeOriginal lives in the Exif sub-IFD, DateTime in IFD0.
@@ -120,9 +159,16 @@ def upsert_photo(
     `_process_photo` does, to check `mtime`) skip a second identical SELECT.
     Left as None, the row is looked up here exactly as before.
     """
-    exif = _read_exif(path)  # opened once for both date and location
-    taken_at = _taken_at_from_exif(exif) if exif is not None else None
-    gps = _gps_from_exif(exif) if exif is not None else None
+    exif = None
+    taken_at = None
+    gps = None
+    try:
+        exif = _read_exif(path)
+        if exif is not None:
+            taken_at = _taken_at_from_exif(exif)
+            gps = _gps_from_exif(exif)
+    except Exception:  # noqa: BLE001 - EXIF is best-effort, never block analysis
+        log.warning("could not read EXIF from %s", path)
     lat, lon = gps if gps else (None, None)
     if existing_id is None:
         existing = db.execute("SELECT id FROM photos WHERE path = ?", (path,)).fetchone()
@@ -311,15 +357,22 @@ class Analyzer:
             if not os.path.isdir(folder):
                 raise FileNotFoundError(f"Folder not found: {folder}")
             for model in (DETECTOR_MODEL, RECOGNIZER_MODEL):
-                if not os.path.isfile(model):
-                    raise FileNotFoundError(
-                        f"Model file missing: {model}\n"
-                        "Run `python scripts/download_models.py` first."
-                    )
-            detector = cv2.FaceDetectorYN.create(
-                DETECTOR_MODEL, "", (320, 320), DETECTION_SCORE_THRESHOLD
-            )
-            recognizer = cv2.FaceRecognizerSF.create(RECOGNIZER_MODEL, "")
+                try:
+                    validate_model(model)
+                except ModelError as exc:
+                    raise ModelError(str(exc)) from None
+            try:
+                detector = cv2.FaceDetectorYN.create(
+                    DETECTOR_MODEL, "", (320, 320), DETECTION_SCORE_THRESHOLD
+                )
+                recognizer = cv2.FaceRecognizerSF.create(RECOGNIZER_MODEL, "")
+            except cv2.error as exc:
+                raise ModelError(
+                    f"OpenCV could not load the face models.\n{exc}\n"
+                    "The model files may be corrupt or incompatible with this "
+                    "OpenCV version. Delete `models/` and run "
+                    "`python scripts/download_models.py` again."
+                ) from exc
 
             files, unreadable = _scan(folder)
             self._set(total=len(files))
@@ -398,10 +451,12 @@ class Analyzer:
         image = cv2.imread(path)
         if image is None:
             image = self._read_with_pillow(path)
-        if image is None:
-            raise ValueError("unreadable image")
+        if image is None or image.size == 0:
+            raise ValueError(f"unreadable image: {os.path.basename(path)}")
 
         height, width = image.shape[:2]
+        if width == 0 or height == 0:
+            raise ValueError(f"empty image: {os.path.basename(path)}")
 
         # Detect on a downscaled copy for speed, map boxes back to full size.
         scale = 1.0
