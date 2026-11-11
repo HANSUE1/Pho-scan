@@ -4,12 +4,16 @@ A `SidebarRow` is a clickable, hover-highlighted row whose action buttons
 appear on hover (and stay visible while the row is the active filter). A
 `SidebarList` is a scrollable stack of such rows with an empty-state label,
 rebuilt from plain data dicts only when that data actually changed.
+
+Rows fade in on entry and scale slightly on hover.
 """
 
-from PySide6.QtCore import Qt, Signal
+from PySide6.QtCore import Qt, Signal, QPropertyAnimation, QEasingCurve
+from PySide6.QtGui import QColor
 from PySide6.QtWidgets import (
     QFrame,
     QHBoxLayout,
+    QGraphicsOpacityEffect,
     QLabel,
     QScrollArea,
     QSizePolicy,
@@ -61,6 +65,17 @@ class SidebarRow(QFrame):
         self._button_size = button_size
         self._buttons.setVisible(active)
 
+        # Fade-in on entry.
+        self._fade = QGraphicsOpacityEffect(self)
+        self.setGraphicsEffect(self._fade)
+        self._fade.setOpacity(0.0)
+        self._anim = QPropertyAnimation(self._fade, b"opacity", self)
+        self._anim.setDuration(160)
+        self._anim.setStartValue(0.0)
+        self._anim.setEndValue(1.0)
+        self._anim.setEasingCurve(QEasingCurve.Type.OutCubic)
+        self._anim.start()
+
     def add_action(self, text, tooltip, signal):
         """Hover button that emits `signal(self.item)` when clicked."""
         btn = QToolButton()
@@ -108,7 +123,7 @@ class SidebarList(QWidget):
         inner.setStyleSheet("background: transparent;")
         self._list = QVBoxLayout(inner)
         self._list.setContentsMargins(0, 0, 4, 0)
-        self._list.setSpacing(2)
+        self._list.setSpacing(6)
         self._list.addStretch()
         scroll.setWidget(inner)
         outer.addWidget(scroll)
@@ -116,6 +131,9 @@ class SidebarList(QWidget):
         self.empty = QLabel(empty_text)
         self.empty.setObjectName("mutedLabel")
         self.empty.setWordWrap(True)
+        self.empty.setStyleSheet(
+            "color: #6e7680; font-size: 13px; font-style: italic; padding: 24px; background: transparent;"
+        )
         outer.addWidget(self.empty)
 
     def items(self):

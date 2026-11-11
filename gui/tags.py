@@ -7,7 +7,7 @@ from PySide6.QtWidgets import QLabel
 from gui.sidebar import ElidedLabel, SidebarList, SidebarRow
 from gui.theme import tag_color
 
-DOT = 12
+DOT = 14
 
 
 def _dot_pixmap(color):
@@ -17,7 +17,7 @@ def _dot_pixmap(color):
     painter.setRenderHint(QPainter.Antialiasing)
     painter.setPen(Qt.NoPen)
     painter.setBrush(color)
-    painter.drawEllipse(QRectF(0.5, 0.5, DOT - 1, DOT - 1))
+    painter.drawEllipse(QRectF(1, 1, DOT - 2, DOT - 2))
     painter.end()
     return pixmap
 
@@ -27,8 +27,8 @@ class TagRow(SidebarRow):
     delete_requested = Signal(dict)
 
     def __init__(self, tag, active, parent=None):
-        super().__init__(tag, active, margins=(8, 4, 8, 4), button_size=22, parent=parent)
-        self.layout_.setSpacing(8)
+        super().__init__(tag, active, margins=(10, 6, 10, 6), button_size=24, parent=parent)
+        self.layout_.setSpacing(10)
 
         dot = QLabel()
         dot.setPixmap(_dot_pixmap(tag_color(tag["id"])))
@@ -37,13 +37,14 @@ class TagRow(SidebarRow):
 
         name = ElidedLabel(tag["name"])
         name.setStyleSheet(
-            f"color: {tag_color(tag['id']).name()}; font-size: 13px;"
-            " font-weight: 600; background: transparent;"
+            f"color: {tag_color(tag['id']).name()}; font-size: 14px;"
+            " font-weight: 700; background: transparent;"
         )
         self.layout_.addWidget(name, 1)
 
         count = QLabel(str(tag["photo_count"]))
         count.setObjectName("personCount")
+        count.setStyleSheet("color: #8e96a0; font-size: 12px; background: transparent;")
         self.layout_.addWidget(count)
 
         self.add_action("✎", "Rename tag", self.rename_requested)

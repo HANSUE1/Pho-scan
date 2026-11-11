@@ -7,7 +7,7 @@ from PySide6.QtWidgets import QLabel, QVBoxLayout
 from gui.sidebar import ElidedLabel, SidebarList, SidebarRow
 from gui.theme import person_color
 
-AVATAR = 44
+AVATAR = 48
 
 
 def _circular_avatar(pixmap, color):
@@ -18,13 +18,13 @@ def _circular_avatar(pixmap, color):
     painter.setRenderHint(QPainter.Antialiasing)
     if pixmap is not None:
         path = QPainterPath()
-        path.addEllipse(QRectF(1, 1, AVATAR - 2, AVATAR - 2))
+        path.addEllipse(QRectF(2, 2, AVATAR - 4, AVATAR - 4))
         painter.setClipPath(path)
         painter.drawPixmap(result.rect(), pixmap)
         painter.setClipping(False)
     painter.setPen(QPen(color, 2))
     painter.setBrush(Qt.NoBrush)
-    painter.drawEllipse(QRectF(1, 1, AVATAR - 2, AVATAR - 2))
+    painter.drawEllipse(QRectF(2, 2, AVATAR - 4, AVATAR - 4))
     painter.end()
     return result
 
@@ -35,8 +35,8 @@ class PersonRow(SidebarRow):
     delete_requested = Signal(dict)
 
     def __init__(self, person, active, parent=None):
-        super().__init__(person, active, margins=(8, 6, 8, 6), button_size=24, parent=parent)
-        self.layout_.setSpacing(10)
+        super().__init__(person, active, margins=(10, 8, 10, 8), button_size=26, parent=parent)
+        self.layout_.setSpacing(12)
 
         self.avatar = QLabel()
         self.avatar.setFixedSize(AVATAR, AVATAR)
@@ -44,15 +44,16 @@ class PersonRow(SidebarRow):
         self.layout_.addWidget(self.avatar)
 
         meta = QVBoxLayout()
-        meta.setSpacing(1)
+        meta.setSpacing(2)
         name = ElidedLabel(person["name"])
         name.setStyleSheet(
             f"color: {person_color(person['id']).name()};"
-            " font-size: 14px; font-weight: 600; background: transparent;"
+            " font-size: 15px; font-weight: 700; background: transparent;"
         )
         n = person["photo_count"]
         count = QLabel(f"{n} photo{'' if n == 1 else 's'}")
         count.setObjectName("personCount")
+        count.setStyleSheet("color: #8e96a0; font-size: 12px; background: transparent;")
         meta.addWidget(name)
         meta.addWidget(count)
         self.layout_.addLayout(meta, 1)
@@ -79,7 +80,7 @@ class PeoplePanel(SidebarList):
     delete_requested = Signal(dict)
 
     def __init__(self, loader, parent=None):
-        super().__init__("No people detected yet.", parent)
+        super().__init__("No people detected yet. Analyze a folder to find faces.", parent)
         self._loader = loader
         loader.portrait_ready.connect(self._on_portrait_ready)
 

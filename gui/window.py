@@ -4,7 +4,15 @@ import html
 import logging
 import os
 
-from PySide6.QtCore import QFileSystemWatcher, QSettings, Qt, QTimer, QUrl
+from PySide6.QtCore import (
+    QEasingCurve,
+    QFileSystemWatcher,
+    QPropertyAnimation,
+    QSettings,
+    Qt,
+    QTimer,
+    QUrl,
+)
 from PySide6.QtGui import QDesktopServices, QKeySequence, QShortcut
 from PySide6.QtWidgets import (
     QApplication,
@@ -13,6 +21,7 @@ from PySide6.QtWidgets import (
     QDialogButtonBox,
     QFileDialog,
     QFrame,
+    QGraphicsOpacityEffect,
     QHBoxLayout,
     QInputDialog,
     QLabel,
@@ -37,12 +46,19 @@ from gui.people import PeoplePanel
 from gui.settings import LOG_LEVELS, SettingsDialog
 from gui.tags import TagsPanel
 from gui.theme import (
+    ACCENT,
+    BORDER,
+    EASE_OUT,
     app_icon,
     aspect_icon,
     eye_icon,
     gear_icon,
+    glass_panel_style,
+    MUTED,
+    PANEL,
     pin_icon,
     sort_icon,
+    empty_state_style,
 )
 from gui.thumbs import ImageLoader
 from paths import default_photos_dir
@@ -111,6 +127,10 @@ class MainWindow(QMainWindow):
         self.rescan_timer.setSingleShot(True)
         self.rescan_timer.setInterval(RESCAN_DEBOUNCE_MS)
         self.rescan_timer.timeout.connect(self._auto_rescan)
+
+        # UI animation trackers.
+        self._progress_anim: QPropertyAnimation | None = None
+        self._banner_anim: QPropertyAnimation | None = None
 
         analyzer_mod.GREEDY_THRESHOLD = float(
             self.settings.value("greedyThreshold", analyzer_mod.GREEDY_THRESHOLD)
@@ -224,6 +244,7 @@ class MainWindow(QMainWindow):
         self.gallery.customContextMenuRequested.connect(self._photo_context_menu)
         self.empty_label = QLabel(EMPTY_LIBRARY_TEXT)
         self.empty_label.setObjectName("emptyState")
+        self.empty_label.setStyleSheet(empty_state_style())
         self.empty_label.setAlignment(Qt.AlignCenter)
         self.empty_label.setWordWrap(True)
         self.stack = QStackedWidget()
@@ -236,6 +257,7 @@ class MainWindow(QMainWindow):
         sidebar = QWidget()
         sidebar.setObjectName("sidebar")
         sidebar.setFixedWidth(SIDEBAR_W)
+        sidebar.setStyleSheet(glass_panel_style())
         side = QVBoxLayout(sidebar)
         side.setContentsMargins(14, 16, 10, 16)
         side.setSpacing(10)
@@ -378,6 +400,18 @@ class MainWindow(QMainWindow):
             self.filter_label.setText(
                 f"Showing {n} photo{'' if n == 1 else 's'} " + " · ".join(parts)
             )
+        # Animate banner appearance.
+        effect = self.filter_banner.graphicsEffect()
+        if effect is None:
+            effect = QGraphicsOpacityEffect(self.filter_banner)
+            self.filter_banner.setGraphicsEffect(effect)
+        anim = QPropertyAnimation(effect, b"opacity", self.filter_banner)
+        anim.setDuration(180)
+        anim.setStartValue(0.0 if parts else effect.opacity())
+        anim.setEndValue(1.0 if parts else 0.0)
+        anim.setEasingCurve(EASE_OUT)
+        anim.start()
+        self._banner_anim = anim
 
     # ---------------------------------------------------------------- filter
 
@@ -845,8 +879,16 @@ class MainWindow(QMainWindow):
     def _poll_progress(self):
         progress = self.analyzer.get_progress()
         total, done = progress["total"], progress["done"]
+        # Smoothly animate the progress bar value.
+        if self._progress_anim is not None:
+            self._progress_anim.stop()
+        self._progress_anim = QPropertyAnimation(self.progress_bar, b"value", self)
+        self._progress_anim.setDuration(300)
+        self._progress_anim.setStartValue(self.progress_bar.value())
+        self._progress_anim.setEndValue(done)
+        self._progress_anim.setEasingCurve(EASE_OUT)
+        self._progress_anim.start()
         self.progress_bar.setMaximum(max(total, 1))
-        self.progress_bar.setValue(done)
         if progress["status"] == "running":
             current = f" — {progress['current']}" if progress["current"] else ""
             percent = f" ({done * 100 // total}%)" if total else ""

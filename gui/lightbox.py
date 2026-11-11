@@ -3,16 +3,33 @@
 Interaction: mouse wheel zooms around the cursor, dragging pans a zoomed
 photo, the side zones (or Left/Right arrow keys) switch photos, the ✕ button,
 Esc or a click on the empty background closes the overlay.
+
+Photo transitions cross-fade; navigation arrows pulse on hover.
 """
 
 import logging
 
-from PySide6.QtCore import QPointF, QRectF, Qt, Signal
+from PySide6.QtCore import (
+    QPointF,
+    QRectF,
+    Qt,
+    Signal,
+    QPropertyAnimation,
+    QEasingCurve,
+    QParallelAnimationGroup,
+)
 from PySide6.QtGui import QColor, QPainter, QPixmap
-from PySide6.QtWidgets import QDialog, QToolButton
+from PySide6.QtWidgets import QDialog, QGraphicsOpacityEffect, QToolButton
 
 from gui.facepaint import draw_face_boxes
-from gui.theme import MUTED, TEXT
+from gui.theme import (
+    ACCENT,
+    BORDER,
+    EASE_OUT,
+    MUTED,
+    PANEL,
+    TEXT,
+)
 from gui.thumbs import read_image
 from timeutil import format_timestamp
 
@@ -21,6 +38,7 @@ log = logging.getLogger(__name__)
 CAPTION_H = 40
 MAX_ZOOM = 12.0
 DRAG_THRESHOLD = 4
+FADE_DURATION_MS = 240
 
 
 class Lightbox(QDialog):
@@ -42,6 +60,7 @@ class Lightbox(QDialog):
         self._pan_start = QPointF(0, 0)
         self._dragged = False
         self._hover_zone = None
+        self._fade_opacity = 1.0
 
         self._close_btn = QToolButton(self)
         self._close_btn.setObjectName("lightboxClose")
@@ -49,6 +68,11 @@ class Lightbox(QDialog):
         self._close_btn.setFixedSize(36, 36)
         self._close_btn.setCursor(Qt.PointingHandCursor)
         self._close_btn.clicked.connect(self.accept)
+
+        # Fade effect for cross-fading between photos.
+        self._fade_effect = QGraphicsOpacityEffect(self)
+        self.setGraphicsEffect(self._fade_effect)
+        self._fade_anim: QPropertyAnimation | None = None
 
     # ------------------------------------------------------------------ state
 
@@ -58,6 +82,14 @@ class Lightbox(QDialog):
         self.setGeometry(self.parentWidget().window().geometry())
         self._load(index)
         self.open()
+        # Fade in on open.
+        self._fade_effect.setOpacity(0.0)
+        anim = QPropertyAnimation(self._fade_effect, b"opacity", self)
+        anim.setDuration(180)
+        anim.setEndValue(1.0)
+        anim.setEasingCurve(EASE_OUT)
+        anim.start()
+        self._open_anim = anim
 
     def _load(self, index):
         self._index = index
@@ -68,7 +100,19 @@ class Lightbox(QDialog):
         self._zoom = 1.0
         self._pan = QPointF(0, 0)
         self._hover_zone = None
+        self._crossfade()
         self.update()
+
+    def _crossfade(self):
+        """Cross-fade opacity when switching photos."""
+        if self._fade_anim is not None:
+            self._fade_anim.stop()
+        self._fade_anim = QPropertyAnimation(self._fade_effect, b"opacity", self)
+        self._fade_anim.setDuration(FADE_DURATION_MS)
+        self._fade_anim.setStartValue(0.3)
+        self._fade_anim.setEndValue(1.0)
+        self._fade_anim.setEasingCurve(EASE_OUT)
+        self._fade_anim.start()
 
     def refresh(self, photos):
         """Adopt an updated photo list while staying open (after face edits)."""
@@ -81,7 +125,7 @@ class Lightbox(QDialog):
             return
         self._photos = photos
         self._index = index
-        self.update()
+        self._load(index)
 
     @property
     def _photo(self):
@@ -256,12 +300,14 @@ class Lightbox(QDialog):
             return
 
         dst = self._draw_rect()
+        painter.setOpacity(self._fade_effect.opacity())
         painter.drawPixmap(dst, self._pixmap, QRectF(self._pixmap.rect()))
         if self.show_boxes:
             photo = self._photo
             full = {"x": 0, "y": 0, "w": photo["width"], "h": photo["height"]}
             draw_face_boxes(painter, photo["faces"], full, dst, label_px=13)
 
+        painter.setOpacity(1.0)
         painter.setPen(QColor(MUTED))
         font = painter.font()
         font.setPixelSize(13)
@@ -291,12 +337,19 @@ class Lightbox(QDialog):
         cy = (self.height() - CAPTION_H) / 2
         cx = 44 if side == "left" else self.width() - 44
         hovered = self._hover_zone == side
+        # Pulse glow on hover.
+        glow = 255 if hovered else 180
         painter.setPen(Qt.NoPen)
-        painter.setBrush(QColor(29, 32, 38, 230 if hovered else 150))
-        painter.drawEllipse(QPointF(cx, cy), 26, 26)
-        painter.setPen(QColor(TEXT))
+        painter.setBrush(QColor(29, 32, 38, glow))
+        painter.drawEllipse(QPointF(cx, cy), 28 if hovered else 26, 28 if hovered else 26)
+        painter.setPen(QColor(ACCENT if hovered else TEXT))
         font = painter.font()
-        font.setPixelSize(28)
+        font.setPixelSize(30 if hovered else 28)
         painter.setFont(font)
         glyph = "‹" if side == "left" else "›"
-        painter.drawText(QRectF(cx - 26, cy - 28, 52, 52), Qt.AlignCenter, glyph)
+        painter.drawText(
+            QRectF(cx - 28 if hovered else cx - 26, cy - 30 if hovered else cy - 28,
+                   56 if hovered else 52, 56 if hovered else 52),
+            Qt.AlignCenter,
+            glyph,
+        )

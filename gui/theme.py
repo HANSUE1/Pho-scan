@@ -1,6 +1,6 @@
-"""Dark theme: palette, stylesheet, person colors and painted icons."""
+"""Modern dark theme: palette, stylesheet, glassmorphism, person colors and painted icons."""
 
-from PySide6.QtCore import QPointF, QRectF, Qt
+from PySide6.QtCore import QEasingCurve, QPointF, QRectF, Qt
 from PySide6.QtGui import (
     QColor,
     QIcon,
@@ -12,17 +12,27 @@ from PySide6.QtGui import (
     QPixmap,
 )
 
-BG = "#14161a"
-PANEL = "#1d2026"
-PANEL_2 = "#23262d"
+BG = "#0f1115"
+PANEL = "#1a1d23"
+PANEL_2 = "#22262e"
 BORDER = "#31353d"
+BORDER_FOCUS = "#4f8cff"
 TEXT = "#e8eaed"
 MUTED = "#9aa0a8"
 ACCENT = "#4f8cff"
 ACCENT_2 = "#6ea3ff"
+ACCENT_GLOW = "rgba(79, 140, 255, 0.35)"
+SUCCESS = "#34c759"
+WARNING = "#ff9500"
+DANGER = "#ff3b30"
 
 # Golden-angle hue spacing gives every person a stable, distinct color.
 GOLDEN_ANGLE = 137.508
+
+# Standard easing for all UI animations.
+EASE_OUT = QEasingCurve.Type.OutCubic
+EASE_OUT_BACK = QEasingCurve.Type.OutBack
+EASE_IN_OUT = QEasingCurve.Type.InOutCubic
 
 
 def person_color(person_id, alpha=1.0):
@@ -65,97 +75,175 @@ QMainWindow, QDialog {{ background: {BG}; }}
 QWidget {{ color: {TEXT}; font-size: 14px; }}
 
 #topbar {{ background: {PANEL}; border-bottom: 1px solid {BORDER}; }}
-#brand {{ font-size: 18px; font-weight: 700; }}
+#brand {{ font-size: 18px; font-weight: 700; letter-spacing: -0.5px; }}
 
 QLineEdit {{
-  background: {BG}; border: 1px solid {BORDER}; border-radius: 8px;
-  padding: 7px 12px; selection-background-color: {ACCENT};
+  background: {BG}; border: 1px solid {BORDER}; border-radius: 10px;
+  padding: 8px 14px; selection-background-color: {ACCENT};
 }}
 QLineEdit:focus {{ border: 1px solid {ACCENT}; }}
 
 QPushButton#analyzeBtn {{
-  background: {ACCENT}; color: #ffffff; font-weight: 600;
-  border: none; border-radius: 8px; padding: 8px 22px;
+  background: qlineargradient(x1:0, y1:0, x2:0, y2:1, stop:0 {ACCENT}, stop:1 #3a6ee0);
+  color: #ffffff; font-weight: 600; font-size: 14px;
+  border: none; border-radius: 10px; padding: 8px 24px;
 }}
-QPushButton#analyzeBtn:hover {{ background: {ACCENT_2}; }}
+QPushButton#analyzeBtn:hover {{
+  background: qlineargradient(x1:0, y1:0, x2:0, y2:1, stop:0 {ACCENT_2}, stop:1 {ACCENT});
+}}
+QPushButton#analyzeBtn:pressed {{
+  background: #3567d6;
+}}
 QPushButton#analyzeBtn:disabled {{ background: #3a4451; color: #c8ccd2; }}
 
 QToolButton#browseBtn {{
-  background: {PANEL_2}; border: 1px solid {BORDER}; border-radius: 8px;
-  padding: 7px 12px;
+  background: {PANEL_2}; border: 1px solid {BORDER}; border-radius: 10px;
+  padding: 8px 14px; font-size: 13px;
 }}
-QToolButton#browseBtn:hover {{ border: 1px solid {ACCENT}; }}
+QToolButton#browseBtn:hover {{ border: 1px solid {ACCENT}; background: {PANEL}; }}
+QToolButton#browseBtn:pressed {{ background: {PANEL_2}; border: 1px solid {ACCENT_2}; }}
 
 #progressRow {{ background: {PANEL}; border-bottom: 1px solid {BORDER}; }}
 QProgressBar {{
-  background: {PANEL_2}; border: none; border-radius: 4px;
-  max-height: 8px; min-height: 8px; text-align: center;
+  background: {PANEL_2}; border: none; border-radius: 6px;
+  max-height: 10px; min-height: 10px; text-align: center;
 }}
 QProgressBar::chunk {{
-  border-radius: 4px;
-  background: qlineargradient(x1:0, y1:0, x2:1, y2:0, stop:0 {ACCENT}, stop:1 #7cc4ff);
+  border-radius: 6px;
+  background: qlineargradient(x1:0, y1:0, x2:1, y2:0, stop:0 {ACCENT}, stop:1 {ACCENT_2});
 }}
 QLabel#progressLabel, QLabel#mutedLabel {{ color: {MUTED}; font-size: 12px; }}
 
 QFrame#banner {{
-  background: {PANEL_2}; border: 1px solid {BORDER}; border-radius: 8px;
+  background: qlineargradient(x1:0, y1:0, x2:0, y2:1, stop:0 rgba(34,38,46,0.95), stop:1 {PANEL_2});
+  border: 1px solid {BORDER}; border-radius: 10px;
 }}
 QFrame#banner QLabel {{ font-size: 13px; background: transparent; }}
 QPushButton#linkBtn {{
   color: {ACCENT_2}; background: transparent; border: none;
   font-size: 13px; text-decoration: underline; padding: 0;
 }}
+QPushButton#linkBtn:hover {{ color: {ACCENT}; }}
 
 QLabel#emptyState {{ color: {MUTED}; font-size: 15px; }}
 
 #sidebar {{ background: {PANEL}; border-left: 1px solid {BORDER}; }}
-QLabel#sidebarTitle {{ color: {MUTED}; font-size: 12px; font-weight: 600; }}
+QLabel#sidebarTitle {{ color: {MUTED}; font-size: 11px; font-weight: 700;
+  letter-spacing: 0.08em; text-transform: uppercase; }}
 
 QToolButton#actionBtn {{
-  background: {PANEL_2}; border: 1px solid {BORDER}; border-radius: 8px;
+  background: {PANEL_2}; border: 1px solid {BORDER}; border-radius: 10px;
 }}
-QToolButton#actionBtn:hover {{ border: 1px solid {ACCENT}; }}
+QToolButton#actionBtn:hover {{ border: 1px solid {ACCENT}; background: {PANEL}; }}
+QToolButton#actionBtn:pressed {{ background: {PANEL_2}; border: 1px solid {ACCENT_2}; }}
 
-QFrame#personRow {{ background: transparent; border: 1px solid transparent; border-radius: 8px; }}
+QFrame#personRow {{ background: transparent; border: 1px solid transparent; border-radius: 10px; }}
 QFrame#personRow:hover {{ background: {PANEL_2}; }}
 QFrame#personRow[active="true"] {{ background: {PANEL_2}; border: 1px solid {ACCENT}; }}
 QLabel#personCount {{ color: {MUTED}; font-size: 12px; background: transparent; }}
 QToolButton#personBtn {{
-  background: transparent; border: none; border-radius: 6px;
-  color: {MUTED}; font-size: 13px;
+  background: {PANEL_2}; border: 1px solid {BORDER}; border-radius: 8px;
+  color: {MUTED}; font-size: 13px; padding: 2px 6px;
 }}
-QToolButton#personBtn:hover {{ background: {BORDER}; color: {TEXT}; }}
+QToolButton#personBtn:hover {{ background: {ACCENT}; color: #ffffff; border: 1px solid {ACCENT}; }}
+QToolButton#personBtn:pressed {{ background: #3567d6; }}
 
-QListView#gallery {{ background: {BG}; border: none; }}
+QListView#gallery {{ background: {BG}; border: none; outline: none; }}
 
 QScrollArea {{ border: none; background: transparent; }}
-QScrollBar:vertical {{ background: transparent; width: 10px; margin: 0; }}
+QScrollBar:vertical {{ background: transparent; width: 10px; margin: 2px; }}
 QScrollBar::handle:vertical {{ background: {BORDER}; border-radius: 5px; min-height: 30px; }}
 QScrollBar::handle:vertical:hover {{ background: #4a5058; }}
 QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {{ height: 0; }}
-QScrollBar:horizontal {{ background: transparent; height: 10px; margin: 0; }}
+QScrollBar:horizontal {{ background: transparent; height: 10px; margin: 2px; }}
 QScrollBar::handle:horizontal {{ background: {BORDER}; border-radius: 5px; min-width: 30px; }}
+QScrollBar::handle:horizontal:hover {{ background: #4a5058; }}
 QScrollBar::add-line:horizontal, QScrollBar::sub-line:horizontal {{ width: 0; }}
 
-QToolTip {{ background: {PANEL_2}; color: {TEXT}; border: 1px solid {BORDER}; }}
+QToolTip {{ background: {PANEL_2}; color: {TEXT}; border: 1px solid {BORDER};
+  border-radius: 6px; padding: 6px 10px; font-size: 12px; }}
 
 QToolButton#lightboxClose {{
-  background: rgba(35, 38, 45, 0.78); color: {TEXT};
+  background: rgba(15, 17, 21, 0.85); color: {TEXT};
   border: 1px solid {BORDER}; border-radius: 18px; font-size: 16px;
 }}
-QToolButton#lightboxClose:hover {{ background: #2e3340; border: 1px solid {ACCENT}; }}
+QToolButton#lightboxClose:hover {{ background: rgba(26, 29, 35, 0.9); border: 1px solid {ACCENT}; }}
 
 QComboBox, QSpinBox, QDoubleSpinBox {{
-  background: {BG}; border: 1px solid {BORDER}; border-radius: 6px;
-  padding: 4px 8px; min-width: 90px;
+  background: {BG}; border: 1px solid {BORDER}; border-radius: 8px;
+  padding: 6px 10px; min-width: 110px;
 }}
 QComboBox:focus, QSpinBox:focus, QDoubleSpinBox:focus {{ border: 1px solid {ACCENT}; }}
 QComboBox QAbstractItemView {{
   background: {PANEL_2}; border: 1px solid {BORDER};
   selection-background-color: {ACCENT};
 }}
+
+QDialog {{ background: {BG}; }}
+QDialog QLabel {{ color: {TEXT}; }}
+QDialog QPushButton {{
+  background: {PANEL_2}; border: 1px solid {BORDER}; border-radius: 8px;
+  padding: 6px 16px; min-width: 80px;
+}}
+QDialog QPushButton:hover {{ border: 1px solid {ACCENT}; background: {PANEL}; }}
+QDialog QPushButton:default {{
+  background: {ACCENT}; color: #ffffff; border: none;
+}}
+QDialog QPushButton:default:hover {{ background: {ACCENT_2}; }}
 """
 
+# --------------------------------------------------------------------------- animations
+
+CARD_SCALE_HOVER = 1.02
+CARD_SCALE_SELECTED = 1.03
+FADE_DURATION_MS = 220
+SLIDE_DURATION_MS = 300
+PANEL_FADE_DURATION_MS = 180
+
+
+def glass_panel_style(border=BORDER, radius=12):
+    """Translucent frosted-glass panel style."""
+    return f"""
+        QFrame {{
+          background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
+            stop:0 rgba(34, 38, 46, 0.85), stop:1 rgba(26, 29, 35, 0.85));
+          border: 1px solid {border}; border-radius: {radius}px;
+        }}
+    """
+
+
+def card_style(selected=False, hovered=False):
+    """Photo card border style."""
+    color = ACCENT if selected or hovered else BORDER
+    width = 2 if (selected or hovered) else 1
+    return f"""
+        QFrame {{
+          border: {width}px solid {color};
+          border-radius: 12px;
+          background: {PANEL};
+        }}
+    """
+
+
+def empty_state_style():
+    return f"""
+        QLabel {{ color: {MUTED}; font-size: 15px; font-weight: 500;
+          background: transparent; padding: 24px; }}
+    """
+
+
+def person_color_hex(person_id, alpha=1.0):
+    """Return a hex color string for person_id."""
+    c = person_color(person_id, alpha)
+    return c.name() if alpha >= 1.0 else f"#{c.red():02x}{c.green():02x}{c.blue():02x}{int(c.alphaF()*255):02x}"
+
+
+def tag_color_hex(tag_id, alpha=1.0):
+    c = tag_color(tag_id, alpha)
+    return c.name() if alpha >= 1.0 else f"#{c.red():02x}{c.green():02x}{c.blue():02x}{int(c.alphaF()*255):02x}"
+
+
+# --------------------------------------------------------------------------- painted icons
 
 def _painted_icon(draw, size=20):
     pixmap = QPixmap(size, size)
